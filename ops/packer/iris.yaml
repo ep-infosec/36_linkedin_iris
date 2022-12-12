@@ -1,0 +1,131 @@
+variables:
+  app_name: "iris"
+  app_version: ""  # will be set by gen_packer_cfg.py
+  git_tag: "master"
+  aws_access_key: ""
+  aws_secret_key: ""
+  aws_ssh_keypair_name: ""
+  aws_ssh_private_key_file: ""
+
+
+builders:
+  - type: "amazon-ebs"
+    access_key: "{{ user `aws_access_key` }}"
+    secret_key: "{{ user `aws_secret_key` }}"
+    region: "us-west-2"
+    instance_type: "t2.micro"
+    ssh_username: "ubuntu"
+    ami_name: "{{ user `app_name` }} {{ user `app_version`}} {{ timestamp }}"
+    ami_groups: "all"
+    ssh_keypair_name: "{{ user `aws_ssh_keypair_name` }}"
+    ssh_private_key_file: "{{ user `aws_ssh_private_key_file` }}"
+    # most recent Ubuntu 16.04 HVM EBS AMI from Canonical
+    source_ami_filter:
+      filters:
+        virtualization-type: "hvm"
+        name: "*ubuntu-xenial-16.04-amd64-server-*"
+        root-device-type: "ebs"
+      owners: ["099720109477"]
+      most_recent: True
+    tags:
+      type: 'packer_build'
+      app: 'iris'
+      version: '{{ user `app_version` }}'
+    run_tags:
+      type: 'packer_build'
+      app: 'iris'
+      version: '{{ user `app_version` }}'
+    snapshot_tags:
+      type: 'packer_build'
+      app: 'iris'
+      version: '{{ user `app_version` }}'
+    run_volume_tags:
+      type: 'packer_build'
+      app: 'iris'
+      version: '{{ user `app_version` }}'
+
+  - type: "docker"
+    image: "ubuntu:20.04"
+    changes:
+      - 'EXPOSE 16649'
+      - "ENTRYPOINT []"
+      - 'CMD ["sudo", "-EHu", "iris", "bash", "-c", "source /home/iris/env/bin/activate && python /home/iris/entrypoint.py"]'
+    commit: True
+
+
+provisioners:
+  - type: "shell"
+    inline:
+      - mkdir /tmp/repo
+
+  - type: "file"
+    source: "../../src"
+    destination: "/tmp/repo"
+
+  - type: "file"
+    source: "../../setup.py"
+    destination: "/tmp/repo/setup.py"
+  
+  - type: "file"
+    source: "../../README.md"
+    destination: "/tmp/repo/README.md"
+
+  - type: "file"
+    source: "../../db"
+    destination: "/tmp/repo"
+
+  - type: "file"
+    source: "../../ops"
+    destination: "/tmp/repo"
+
+  - type: "file"
+    source: "../../configs"
+    destination: "/tmp/repo"
+
+  - type: "shell"
+    only: ["docker"]
+    inline:
+      - "apt update && apt -y install sudo"
+
+  - type: "shell"
+    only: ["amazon-ebs"]
+    inline:
+      - "sudo apt-get update"
+
+  - type: "shell"
+    inline:
+      # for ubuntu:20.04, Python 3.8 is used
+      - 'DEBIAN_FRONTEND=noninteractive sudo -E apt -y install python3 python3-pip python3-virtualenv && DEBIAN_FRONTEND=noninteractive sudo -E apt -y install libldap2-dev libsasl2-dev && DEBIAN_FRONTEND=noninteractive sudo -E apt -y install nginx uwsgi uwsgi-plugin-python3 uwsgi-plugin-gevent-python3 && DEBIAN_FRONTEND=noninteractive sudo -E apt -y install mysql-client && sudo rm -rf /var/cache/apt/archives/*'
+      - sudo useradd -m -s /bin/bash iris
+      - sudo chown -R iris:iris /home/iris /var/log/nginx /var/lib/nginx
+      - sudo -Hu iris mkdir -p /home/iris/var/log/uwsgi /home/iris/var/log/nginx /home/iris/var/run
+      - sudo mv /tmp/repo /home/iris/source
+      - "sudo chown -R iris:iris /home/iris/source"
+      - sudo mv /home/iris/source/ops/config/systemd/uwsgi-iris.service /etc/systemd/system/uwsgi-iris.service
+      - sudo mv /home/iris/source/ops/config/systemd/nginx-iris.service /etc/systemd/system/nginx-iris.service
+      - sudo mv /home/iris/source/ops/config/systemd/nginx-iris.socket /etc/systemd/system/nginx-iris.socket
+      - sudo -Hu iris ln -s /home/iris/source/ops/daemons /home/iris/daemons
+      - sudo -Hu iris ln -s /home/iris/source/ops/entrypoint.py /home/iris/entrypoint.py
+      - sudo -Hu iris ln -s /home/iris/source/db /home/iris/db
+      - sudo -Hu iris mkdir /home/iris/config
+      - sudo -Hu iris cp /home/iris/source/configs/config.dev.yaml /home/iris/config/config.yaml
+      - sudo -Hu iris virtualenv /home/iris/env
+      - sudo -Hu iris /bin/bash -c 'source /home/iris/env/bin/activate && cd /home/iris/source && pip install ".[prometheus,kazoo]"'
+
+  - type: "shell"
+    only: ["docker"]
+    inline:
+      - "sudo -Hu iris mv -f /home/iris/daemons/uwsgi-docker.yaml /home/iris/daemons/uwsgi.yaml"
+
+
+
+post-processors:
+  - type: "docker-tag"
+    repository: "quay.io/iris/iris"
+    tag: "{{ user `app_version` }}"
+    only: ["docker"]
+
+  - type: "docker-tag"
+    repository: "quay.io/iris/iris"
+    tag: "latest"
+    only: ["docker"]

@@ -1,0 +1,13 @@
+[Unit]
+Description=nginx proxy for uwsgi-iris
+After=syslog.target
+
+[Service]
+ExecStart=/usr/sbin/nginx -c /home/iris/daemons/nginx.conf
+User=iris
+Group=iris
+Restart=on-failure
+KillSignal=SIGQUIT
+Type=simple
+StandardError=syslog
+NotifyAccess=all
